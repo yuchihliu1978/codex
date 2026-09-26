@@ -462,7 +462,7 @@ async fn run_helper(command: &str, cwd: &Path) -> Result<HeaderMap> {
         let job = codex_utils_pty::JobObject::create_without_breakaway()
             .map_err(|error| anyhow!("MCP HTTP headers helper containment failed: {error}"))?;
         let child = job
-            .spawn_contained(&mut process)
+            .spawn_background_contained(&mut process)
             .map_err(|error| anyhow!("MCP HTTP headers helper failed to start: {error}"))?;
         (child, job)
     };
