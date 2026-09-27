@@ -14,7 +14,7 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-      STABLE_GIT_COMMIT: a566b5581a82e4abda556c6e8d350cdd950b4647
+      STABLE_GIT_COMMIT: 8cf181747a6d889e695d9b172ca4cb105e7363de
     defaults:
       run:
         shell: pwsh
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: a566b5581a82e4abda556c6e8d350cdd950b4647
+          ref: 8cf181747a6d889e695d9b172ca4cb105e7363de
           fetch-depth: 0
           persist-credentials: false
       - name: Record source identity
@@ -63,6 +63,8 @@ jobs:
               'local_package_versions': changed, 'from': '0.0.0', 'to': '0.157.1',
               'external_dependency_changes': 0}, indent=2))
       - name: Run affected Windows crate tests
+        id: tests
+        continue-on-error: true
         run: |
           rustc -Vv | Set-Content ../validation-artifacts/toolchain.txt
           just --version | Add-Content ../validation-artifacts/toolchain.txt
@@ -99,9 +101,9 @@ jobs:
           target: x86_64-pc-windows-msvc
       - name: Build the matching candidate
         run: |
-          cargo build --locked -p codex-cli --bin codex --target x86_64-pc-windows-msvc 2>&1 | Tee-Object ../validation-artifacts/build.txt
+          cargo build --locked -p codex-cli --bin codex 2>&1 | Tee-Object ../validation-artifacts/build.txt
           if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }
-          $candidate = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/debug/codex.exe'
+          $candidate = Join-Path $env:CARGO_TARGET_DIR 'debug/codex.exe'
           Copy-Item -LiteralPath $candidate -Destination ../validation-artifacts/codex.exe -Force
           $manifest = @{
             source_commit = $env:STABLE_GIT_COMMIT
@@ -122,3 +124,7 @@ jobs:
           path: validation-artifacts/
           retention-days: 7
           if-no-files-found: error
+      - name: Require positive test acceptance
+        if: always()
+        run: |
+          if ('${{ steps.tests.outcome }}' -ne 'success') { throw 'Windows positive tests did not pass' }
