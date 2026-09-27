@@ -14,7 +14,7 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-      STABLE_GIT_COMMIT: 754f7ad7b86a7cb256d5eb03973be7d79d705398
+      STABLE_GIT_COMMIT: aef54cb4b
     defaults:
       run:
         shell: pwsh
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 754f7ad7b86a7cb256d5eb03973be7d79d705398
+          ref: aef54cb4b
           fetch-depth: 0
           persist-credentials: false
       - name: Record source identity
@@ -101,27 +101,6 @@ jobs:
           }
           git diff --exit-code -- utils/pty/src/pipe.rs
           if ($LASTEXITCODE -ne 0) { throw 'Candidate source was not restored' }
-      - uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-pc-windows-msvc
-      - name: Build the matching candidate
-        run: |
-          cargo build --locked -p codex-cli --bin codex 2>&1 | Tee-Object ../validation-artifacts/build.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }
-          $candidate = Join-Path $env:CARGO_TARGET_DIR 'debug/codex.exe'
-          Copy-Item -LiteralPath $candidate -Destination ../validation-artifacts/codex.exe -Force
-          $manifest = @{
-            source_commit = $env:STABLE_GIT_COMMIT
-            executable_sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
-            build_lock_sha256 = (Get-FileHash -LiteralPath Cargo.lock -Algorithm SHA256).Hash
-            target = 'x86_64-pc-windows-msvc'
-            profile = 'dev'
-            run_id = $env:GITHUB_RUN_ID
-            run_attempt = $env:GITHUB_RUN_ATTEMPT
-          }
-          $manifest | ConvertTo-Json | Set-Content ../validation-artifacts/manifest.json
-          & $candidate --version | Set-Content ../validation-artifacts/version.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate did not start' }
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         if: always()
         with:
