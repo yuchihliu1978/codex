@@ -105,7 +105,9 @@ fn probe_report() -> anyhow::Result<(String, String, i32)> {
     let exit_code: i32 = std::env::var(EXIT_ENV)?.parse()?;
     let mut stdin = Vec::new();
     let limit = 64 * 1024;
-    std::io::stdin().take(limit).read_to_end(&mut stdin)?;
+    std::io::stdin()
+        .take(limit as u64)
+        .read_to_end(&mut stdin)?;
     let eof = u32::from(stdin.len() < limit);
     let (hwnd, _) = console_attachment();
     let line = format!(
