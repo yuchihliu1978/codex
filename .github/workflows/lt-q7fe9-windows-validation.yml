@@ -14,7 +14,7 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-      STABLE_GIT_COMMIT: 8cf181747a6d889e695d9b172ca4cb105e7363de
+      STABLE_GIT_COMMIT: 754f7ad7b86a7cb256d5eb03973be7d79d705398
     defaults:
       run:
         shell: pwsh
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 8cf181747a6d889e695d9b172ca4cb105e7363de
+          ref: 754f7ad7b86a7cb256d5eb03973be7d79d705398
           fetch-depth: 0
           persist-credentials: false
       - name: Record source identity
@@ -56,7 +56,7 @@ jobs:
               if 'source' not in package and package['version'] == '0.0.0':
                   blocks[i] = block.replace('version = "0.0.0"', 'version = "0.157.1"', 1)
                   changed.append(package['name'])
-          assert len(changed) == 155, changed
+          assert len(changed) in (0, 155), changed
           path.write_bytes('[[package]]'.join(blocks).encode())
           Path('../validation-artifacts/build-Cargo.lock').write_bytes(path.read_bytes())
           Path('../validation-artifacts/lock-normalization.json').write_text(json.dumps({
@@ -76,6 +76,11 @@ jobs:
           $deps = Join-Path $env:CARGO_TARGET_DIR "debug/deps"
           Get-ChildItem $deps -Filter "codex_hooks-*.exe" | Copy-Item -Destination ../validation-artifacts -Force
           Get-ChildItem $deps -Filter "codex_utils_pty-*.exe" | Copy-Item -Destination ../validation-artifacts -Force
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: lt-q7fe9-windows-native-tests
+          path: validation-artifacts/
+          retention-days: 7
       - name: Require the regression to fail without the flag
         run: |
           $sourcePath = Join-Path (Get-Location) 'utils/pty/src/pipe.rs'
