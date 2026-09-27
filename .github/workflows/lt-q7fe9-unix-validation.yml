@@ -22,36 +22,23 @@ jobs:
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
         with:
           tool: just@1.51.0,cargo-nextest
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      - uses: ./.github/actions/setup-rusty-v8
         with:
-          bazelisk-version: 1.28.1
-      - name: Regenerate dependency metadata
+          target: x86_64-unknown-linux-gnu
+      - name: Record source
         run: |
-          set -euo pipefail
           mkdir -p validation-artifacts
           git rev-parse HEAD > validation-artifacts/source.txt
-          just bazel-lock-update 2>&1 | tee validation-artifacts/bazel-lock.txt
-          git diff -- MODULE.bazel.lock > validation-artifacts/bazel-lock.patch
-      - name: Normalize release tag lock versions in build workspace only
-        working-directory: codex-rs
-        shell: python
-        run: |
-          from pathlib import Path
-          import tomllib
-          p = Path('Cargo.lock')
-          blocks = p.read_text().split('[[package]]')
-          changed = []
-          for i, block in enumerate(blocks[1:], 1):
-              package = tomllib.loads('[[package]]' + block)['package'][0]
-              if 'source' not in package and package['version'] == '0.0.0':
-                  blocks[i] = block.replace('version = "0.0.0"', 'version = "0.157.1"', 1)
-                  changed.append(package['name'])
-          assert len(changed) in (0, 155)
-          p.write_text('[[package]]'.join(blocks))
-      - name: Run affected Unix crate tests
+      - name: Run existing core hook integration cases
         run: |
           set -euo pipefail
-          just test -p codex-hooks -p codex-utils-pty --locked 2>&1 | tee validation-artifacts/unix-tests.txt
+          just test -p codex-core --test all --locked -E 'test(suite::hooks::)' 2>&1 | tee validation-artifacts/core-hooks.txt
+      - name: Scoped lint fixes
+        if: always()
+        run: |
+          set -euo pipefail
+          just fix -p codex-hooks -p codex-utils-pty --locked 2>&1 | tee validation-artifacts/clippy.txt
+          git diff > validation-artifacts/clippy.patch
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         if: always()
         with:
