@@ -693,3 +693,7 @@ print(json.dumps({{
         "shutdown must not deliver a late async result"
     );
 }
+
+#[cfg(windows)]
+#[path = "command_runner_windows_tests.rs"]
+mod windows_tests;

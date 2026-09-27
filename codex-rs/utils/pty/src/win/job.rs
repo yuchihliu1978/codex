@@ -14,6 +14,7 @@ use winapi::um::jobapi2::SetInformationJobObject;
 use winapi::um::jobapi2::TerminateJobObject;
 use winapi::um::processthreadsapi::OpenProcess;
 use winapi::um::processthreadsapi::TerminateProcess;
+use winapi::um::winbase::CREATE_NO_WINDOW;
 use winapi::um::winbase::CREATE_SUSPENDED;
 use winapi::um::winnt::HANDLE;
 use winapi::um::winnt::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
@@ -165,9 +166,23 @@ impl JobObject {
         }
     }
 
+    /// Starts a background helper suspended, with no console window.
+    ///
+    /// `creation_flags` replaces flags, so `CREATE_NO_WINDOW` is set after
+    /// suspension and immediately before spawn.
+    pub fn spawn_background_contained(&self, command: &mut Command) -> io::Result<Child> {
+        self.prepare_suspended_spawn(command);
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+        self.finish_suspended_spawn(command)
+    }
+
     /// Starts a process only after assigning it to this Job Object.
     pub fn spawn_contained(&self, command: &mut Command) -> io::Result<Child> {
         self.prepare_suspended_spawn(command);
+        self.finish_suspended_spawn(command)
+    }
+
+    fn finish_suspended_spawn(&self, command: &mut Command) -> io::Result<Child> {
         let child = command.spawn()?;
         let process_handle = child
             .raw_handle()

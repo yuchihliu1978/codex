@@ -38,3 +38,16 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [target.'cfg(any(unix, windows))'.dependencies]
 codex-utils-pty = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.9", features = [
+    "handleapi",
+    "jobapi",
+    "jobapi2",
+    "minwinbase",
+    "processthreadsapi",
+    "tlhelp32",
+    "winbase",
+    "wincon",
+    "winnt",
+] }

@@ -12,6 +12,11 @@ use std::sync::MutexGuard;
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use winapi::um::winbase::CREATE_NO_WINDOW;
+
 use async_channel::Sender;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 #[cfg(windows)]
@@ -230,38 +235,29 @@ pub(crate) async fn run_command(
         command.pre_exec(codex_utils_pty::process_group::detach_from_tty);
     }
 
+    let fail_spawn = |err: std::io::Error| {
+        finish_command_run(
+            started_at,
+            started,
+            CommandRunCompletion {
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(err.to_string()),
+                outcome: "spawn_error",
+            },
+        )
+    };
+
     #[cfg(windows)]
-    let mut process_tree_job = JobObject::create().ok();
-    #[cfg(windows)]
-    let child = match process_tree_job.as_ref() {
-        Some(job) => match job.spawn_contained(&mut command) {
-            Ok(child) => Ok(child),
-            Err(_) => {
-                process_tree_job = None;
-                command.creation_flags(0);
-                command.spawn()
-            }
-        },
-        None => command.spawn(),
+    let (mut child, process_tree_job) = match spawn_windows_command_hook(command) {
+        Ok(spawned) => spawned,
+        Err(err) => return fail_spawn(err),
     };
     #[cfg(not(windows))]
-    let child = command.spawn();
-
-    let mut child = match child {
+    let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(err) => {
-            return finish_command_run(
-                started_at,
-                started,
-                CommandRunCompletion {
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    error: Some(err.to_string()),
-                    outcome: "spawn_error",
-                },
-            );
-        }
+        Err(err) => return fail_spawn(err),
     };
 
     let mut process_tree_guard = ProcessTreeGuard {
@@ -358,15 +354,183 @@ impl Drop for ProcessTreeGuard {
             if let Some(job) = self.job.as_ref() {
                 let _ = job.terminate();
             } else {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &process_id.to_string(), "/T", "/F"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
+                let _ = spawn_taskkill_tree(process_id);
             }
         }
     }
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowsHookLaunchFault {
+    None,
+    #[cfg(test)]
+    JobCreate,
+    #[cfg(test)]
+    ContainedAfterSuspend,
+}
+
+#[cfg(all(windows, test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WindowsHookSpawnPath {
+    Contained,
+    JobUnavailable,
+    ContainedRetry,
+}
+
+#[cfg(all(windows, test))]
+struct HookLaunchSeam {
+    fault: WindowsHookLaunchFault,
+    path: Option<WindowsHookSpawnPath>,
+}
+
+#[cfg(all(windows, test))]
+fn hook_launch_seam() -> &'static Mutex<HookLaunchSeam> {
+    static SEAM: Mutex<HookLaunchSeam> = Mutex::new(HookLaunchSeam {
+        fault: WindowsHookLaunchFault::None,
+        path: None,
+    });
+    &SEAM
+}
+
+#[cfg(all(windows, test))]
+fn lock_hook_launch_seam() -> MutexGuard<'static, HookLaunchSeam> {
+    hook_launch_seam()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(all(windows, test))]
+fn set_hook_launch_fault(fault: WindowsHookLaunchFault) {
+    lock_hook_launch_seam().fault = fault;
+}
+
+#[cfg(all(windows, test))]
+fn take_hook_spawn_path() -> Option<WindowsHookSpawnPath> {
+    lock_hook_launch_seam().path.take()
+}
+
+#[cfg(all(windows, test))]
+fn note_hook_spawn_path(path: WindowsHookSpawnPath) {
+    lock_hook_launch_seam().path = Some(path);
+}
+
+#[cfg(windows)]
+fn spawn_windows_command_hook(
+    mut command: Command,
+) -> std::io::Result<(tokio::process::Child, Option<JobObject>)> {
+    #[cfg(test)]
+    let fault = {
+        let mut seam = lock_hook_launch_seam();
+        let fault = seam.fault;
+        seam.fault = WindowsHookLaunchFault::None;
+        seam.path = None;
+        fault
+    };
+    #[cfg(not(test))]
+    let fault = WindowsHookLaunchFault::None;
+
+    #[cfg(test)]
+    let mut assignment_block = None;
+    let job = match fault {
+        WindowsHookLaunchFault::None => JobObject::create().ok(),
+        #[cfg(test)]
+        WindowsHookLaunchFault::JobCreate => None,
+        #[cfg(test)]
+        WindowsHookLaunchFault::ContainedAfterSuspend => match JobObject::create() {
+            Ok(job) => {
+                assignment_block = Some(block_hook_job_assignment(&job)?);
+                Some(job)
+            }
+            Err(_) => None,
+        },
+    };
+
+    if let Some(job) = job {
+        match job.spawn_background_contained(&mut command) {
+            Ok(child) => {
+                #[cfg(test)]
+                note_hook_spawn_path(WindowsHookSpawnPath::Contained);
+                return Ok((child, Some(job)));
+            }
+            Err(_) => {
+                #[cfg(test)]
+                note_hook_spawn_path(WindowsHookSpawnPath::ContainedRetry);
+                drop(job);
+            }
+        }
+    } else {
+        #[cfg(test)]
+        note_hook_spawn_path(WindowsHookSpawnPath::JobUnavailable);
+    }
+
+    #[cfg(test)]
+    drop(assignment_block);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn().map(|child| (child, None))
+}
+
+#[cfg(all(windows, test))]
+fn block_hook_job_assignment(job: &JobObject) -> std::io::Result<tokio::process::Child> {
+    use std::os::windows::io::AsRawHandle;
+
+    use winapi::um::jobapi2::SetInformationJobObject;
+    use winapi::um::winnt::JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+    use winapi::um::winnt::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    use winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    use winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+    use winapi::um::winnt::JobObjectExtendedLimitInformation;
+
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+    limits.BasicLimitInformation.ActiveProcessLimit = 1;
+    let configured = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle().cast(),
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of_mut!(limits).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut ping = std::path::PathBuf::from(
+        std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows")),
+    );
+    ping.push("System32");
+    ping.push("ping.exe");
+    let mut occupant = Command::new(ping);
+    occupant
+        .arg("-n")
+        .arg("30")
+        .arg("127.0.0.1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    job.spawn_background_contained(&mut occupant)
+}
+
+#[cfg(windows)]
+fn spawn_taskkill_tree(process_id: u32) -> std::io::Result<std::process::Child> {
+    let mut command = std::process::Command::new("taskkill");
+    command
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    spawn_no_window_process(command)
+}
+
+#[cfg(windows)]
+fn spawn_no_window_process(
+    mut command: std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn()
 }
 
 struct CommandRunCompletion {
