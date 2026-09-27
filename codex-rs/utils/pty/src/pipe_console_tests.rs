@@ -93,7 +93,8 @@ fn cwd_matches(temp: &str) -> bool {
 fn report_and_exit(line: &str, err_line: &str, code: i32) -> ! {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
-    let stdout_ok = writeln!(stdout, "{line}").is_ok() && stdout.flush().is_ok();
+    // libtest may print the test label without a trailing newline.
+    let stdout_ok = writeln!(stdout, "\n{line}").is_ok() && stdout.flush().is_ok();
     let stderr_ok = writeln!(stderr, "{err_line}").is_ok() && stderr.flush().is_ok();
     std::process::exit(if stdout_ok && stderr_ok { code } else { 2 });
 }
