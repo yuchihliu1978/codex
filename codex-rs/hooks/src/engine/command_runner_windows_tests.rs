@@ -269,7 +269,10 @@ fn spawn_sleeper() -> io::Result<std::process::Child> {
         std::io::stdout().as_raw_handle(),
         std::io::stderr().as_raw_handle(),
     ] {
-        if unsafe { SetHandleInformation(handle.cast(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        if unsafe {
+            SetHandleInformation(handle.cast(), HANDLE_FLAG_INHERIT, /*dwFlags*/ 0)
+        } == 0
+        {
             return Err(io::Error::last_os_error());
         }
     }
