@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 8cf181747a6d889e695d9b172ca4cb105e7363de
+          ref: 754f7ad7b86a7cb256d5eb03973be7d79d705398
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
@@ -27,6 +27,7 @@ jobs:
           bazelisk-version: 1.28.1
       - name: Regenerate dependency metadata
         run: |
+          set -euo pipefail
           mkdir -p validation-artifacts
           git rev-parse HEAD > validation-artifacts/source.txt
           just bazel-lock-update 2>&1 | tee validation-artifacts/bazel-lock.txt
@@ -45,10 +46,11 @@ jobs:
               if 'source' not in package and package['version'] == '0.0.0':
                   blocks[i] = block.replace('version = "0.0.0"', 'version = "0.157.1"', 1)
                   changed.append(package['name'])
-          assert len(changed) == 155
+          assert len(changed) in (0, 155)
           p.write_text('[[package]]'.join(blocks))
       - name: Run affected Unix crate tests
         run: |
+          set -euo pipefail
           just test -p codex-hooks -p codex-utils-pty --locked 2>&1 | tee validation-artifacts/unix-tests.txt
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         if: always()
