@@ -292,19 +292,23 @@ fn publish_tree(exit_after: bool) -> io::Result<()> {
     Ok(())
 }
 
-fn kill_pid(pid: u32) {
-    if let Ok(handle) = JobObject::open_process_handle(pid) {
-        let _ = JobObject::terminate_process_handle(&handle);
+struct KillPid {
+    pid: u32,
+    handle: OwnedHandle,
+}
+
+impl KillPid {
+    fn new(pid: u32) -> io::Result<Self> {
+        Ok(Self {
+            pid,
+            handle: JobObject::open_process_handle(pid)?,
+        })
     }
 }
 
-struct KillPid(Option<u32>);
-
 impl Drop for KillPid {
     fn drop(&mut self) {
-        if let Some(pid) = self.0.take() {
-            kill_pid(pid);
-        }
+        let _ = JobObject::terminate_process_handle(&self.handle);
     }
 }
 
@@ -740,13 +744,15 @@ async fn run_timeout_case(
     let configured = handler(temp, FIXTURE, env.clone(), 2, false)?;
     set_hook_launch_fault(fault);
     let run_fut = run_command(&runtime, &configured, FIXTURE, &env, "{}", temp);
-    let pid_fut = wait_for_pid_file(&pid_file);
+    let pid_fut = async {
+        let (root, child) = wait_for_pid_file(&pid_file).await?;
+        Ok::<_, io::Error>((root, KillPid::new(child)?))
+    };
     let joined = timeout(Duration::from_secs(15), join(run_fut, pid_fut))
         .await
         .map_err(|_| io_err(format!("{name} timeout case hung")))?;
     let (result, pids) = joined;
-    let (root, child) = pids?;
-    let owned_child = KillPid(Some(child));
+    let (root, owned_child) = pids?;
     let path = take_hook_spawn_path();
     if result.error.as_deref() != Some("hook timed out after 2s")
         || result.exit_code.is_some()
@@ -777,7 +783,7 @@ async fn run_live_taskkill_tree(exe: &Path, temp: &Path) -> io::Result<()> {
         return Err(io_err("taskkill fixture unexpectedly has a job"));
     }
     let (root_pid, child_pid) = wait_for_pid_file(&pid_file).await?;
-    let _owned_child = KillPid(Some(child_pid));
+    let _owned_child = KillPid::new(child_pid)?;
     let mut cleanup = spawn_taskkill_tree(root_pid)?;
     let status = tokio::task::spawn_blocking(move || cleanup.wait())
         .await
@@ -810,7 +816,7 @@ async fn run_preserve_descendant(exe: &Path, temp: &Path, nonce: &str) -> io::Re
             .map_err(|err| io_err(err.to_string()))
             .and_then(|text| parse_pids(&format!("{PIDS_PREFIX} {text}")))
     })?;
-    let _kill = KillPid(Some(child));
+    let _kill = KillPid::new(child)?;
     if !process_is_active(child) {
         return Err(io_err("descendant did not survive normal nonzero exit"));
     }
@@ -903,12 +909,7 @@ async fn worker() -> io::Result<()> {
         WindowsHookSpawnPath::Contained,
     )
     .await?;
-    wait_until_inactive(
-        contained_child
-            .0
-            .ok_or_else(|| io_err("missing descendant"))?,
-    )
-    .await?;
+    wait_until_inactive(contained_child.pid).await?;
     let uncontained_child = run_timeout_case(
         &exe,
         &temp,
