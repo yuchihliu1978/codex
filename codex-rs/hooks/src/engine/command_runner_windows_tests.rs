@@ -790,8 +790,10 @@ async fn run_preserve_descendant(exe: &Path, temp: &Path, nonce: &str) -> io::Re
 
 async fn run_async_shutdown(exe: &Path, temp: &Path) -> io::Result<()> {
     let pid_file = temp.join("shutdown-pids.txt");
-    let (runtime, results) = runtime();
-    let runtime = runtime.reconfigured(shell_for_fixture(exe));
+    let (original_runtime, results) = runtime();
+    let runtime = original_runtime.reconfigured(shell_for_fixture(exe));
+    // The result channel closes only after every runtime sender is dropped.
+    drop(original_runtime);
     let env = tree_env(temp, "tree-root", &pid_file, 0);
     let configured = handler(temp, FIXTURE, env, 30, true)?;
     schedule(&runtime, configured, temp).await;
