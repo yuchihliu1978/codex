@@ -1,4 +1,4 @@
-﻿# Owner-authorized workflow for the separate fork-only validation branch.
+# Owner-authorized workflow for the separate fork-only validation branch.
 # This workflow is not part of the upstream repair diff.
 name: lt-q7fe9 Windows validation
 on:
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: aef54cb4ba1c6a55e45888fb110681af3bef21d1
+          ref: 3a7b95e07d9c5114b14255833d516fdbfa9dbba3
           fetch-depth: 0
           persist-credentials: false
       - name: Record source identity
@@ -100,6 +100,26 @@ jobs:
             [IO.File]::WriteAllBytes($sourcePath, $savedBytes)
           }
           git diff --exit-code -- utils/pty/src/pipe.rs
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate source was not restored' }
+      - name: Require the hook regression to fail without the background flag
+        run: |
+          $sourcePath = Join-Path (Get-Location) 'utils/pty/src/win/job.rs'
+          $savedBytes = [IO.File]::ReadAllBytes($sourcePath)
+          try {
+            $sourceText = [Text.Encoding]::UTF8.GetString($savedBytes)
+            $flagLine = 'command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);'
+            if (($sourceText.Split($flagLine).Count - 1) -ne 1) { throw 'Unexpected flag construction' }
+            [IO.File]::WriteAllText($sourcePath, $sourceText.Replace($flagLine, 'command.creation_flags(CREATE_SUSPENDED);'), [Text.UTF8Encoding]::new($false))
+            just test -p codex-hooks --locked -E 'test(=engine::command_runner::tests::windows_tests::detached_parent_command_hooks_hide_console_windows)' 2>&1 | Tee-Object ../validation-artifacts/negative-hook-test.txt
+            $testExit = $LASTEXITCODE
+            $testLog = Get-Content ../validation-artifacts/negative-hook-test.txt -Raw
+            if ($testExit -eq 0 -or $testLog -notmatch 'root console was attachable|console was present') {
+              throw 'Negative control did not fail for the expected console assertion'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($sourcePath, $savedBytes)
+          }
+          git diff --exit-code -- utils/pty/src/win/job.rs
           if ($LASTEXITCODE -ne 0) { throw 'Candidate source was not restored' }
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         if: always()
