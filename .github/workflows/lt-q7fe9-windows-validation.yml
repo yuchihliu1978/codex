@@ -1,0 +1,124 @@
+# Owner-authorized workflow for the separate fork-only validation branch.
+# This workflow is not part of the upstream repair diff.
+name: lt-q7fe9 Windows validation
+on:
+  push:
+    branches: [lt-q7fe9-windows-validation]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      STABLE_GIT_COMMIT: a566b5581a82e4abda556c6e8d350cdd950b4647
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: a566b5581a82e4abda556c6e8d350cdd950b4647
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record source identity
+        run: |
+          "CARGO_TARGET_DIR=$env:RUNNER_TEMP/lt-q7fe9-target" | Add-Content $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force ../validation-artifacts | Out-Null
+          git rev-parse HEAD | Set-Content ../validation-artifacts/source.txt
+          git diff 6b25b827c0a58fd6adf4bfd55c2119ffecb03723 HEAD --stat | Add-Content ../validation-artifacts/source.txt
+          if ((git rev-parse HEAD) -ne $env:STABLE_GIT_COMMIT) { throw 'Wrong source commit' }
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: '1.95.0'
+          targets: x86_64-pc-windows-msvc
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: just@1.51.0,cargo-nextest
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Align release-tag local versions in the build lockfile
+        shell: python
+        run: |
+          from pathlib import Path
+          import json, tomllib
+          path = Path('Cargo.lock')
+          original = path.read_text()
+          blocks = original.split('[[package]]')
+          changed = []
+          for i, block in enumerate(blocks[1:], 1):
+              package = tomllib.loads('[[package]]' + block)['package'][0]
+              if 'source' not in package and package['version'] == '0.0.0':
+                  blocks[i] = block.replace('version = "0.0.0"', 'version = "0.157.1"', 1)
+                  changed.append(package['name'])
+          assert len(changed) == 155, changed
+          path.write_bytes('[[package]]'.join(blocks).encode())
+          Path('../validation-artifacts/build-Cargo.lock').write_bytes(path.read_bytes())
+          Path('../validation-artifacts/lock-normalization.json').write_text(json.dumps({
+              'local_package_versions': changed, 'from': '0.0.0', 'to': '0.157.1',
+              'external_dependency_changes': 0}, indent=2))
+      - name: Run affected Windows crate tests
+        run: |
+          rustc -Vv | Set-Content ../validation-artifacts/toolchain.txt
+          just --version | Add-Content ../validation-artifacts/toolchain.txt
+          cargo nextest --version | Add-Content ../validation-artifacts/toolchain.txt
+          just test -p codex-utils-pty -p codex-hooks --locked 2>&1 | Tee-Object ../validation-artifacts/positive-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate tests failed' }
+      - name: Save Windows test binaries
+        run: |
+          $deps = Join-Path $env:CARGO_TARGET_DIR "debug/deps"
+          Get-ChildItem $deps -Filter "codex_hooks-*.exe" | Copy-Item -Destination ../validation-artifacts -Force
+          Get-ChildItem $deps -Filter "codex_utils_pty-*.exe" | Copy-Item -Destination ../validation-artifacts -Force
+      - name: Require the regression to fail without the flag
+        run: |
+          $sourcePath = Join-Path (Get-Location) 'utils/pty/src/pipe.rs'
+          $savedBytes = [IO.File]::ReadAllBytes($sourcePath)
+          try {
+            $sourceText = [Text.Encoding]::UTF8.GetString($savedBytes)
+            $flagLine = 'command.creation_flags(CREATE_NO_WINDOW);'
+            if (($sourceText.Split($flagLine).Count - 1) -ne 1) { throw 'Unexpected flag construction' }
+            [IO.File]::WriteAllText($sourcePath, $sourceText.Replace($flagLine, ''), [Text.UTF8Encoding]::new($false))
+            just test -p codex-utils-pty --locked -E 'test(=tests::pipe_console_tests::detached_parent_pipe_children_have_null_console_window)' 2>&1 | Tee-Object ../validation-artifacts/negative-test.txt
+            $testExit = $LASTEXITCODE
+            $testLog = Get-Content ../validation-artifacts/negative-test.txt -Raw
+            if ($testExit -eq 0 -or $testLog -notmatch 'console window was present') {
+              throw 'Negative control did not fail for the expected console assertion'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($sourcePath, $savedBytes)
+          }
+          git diff --exit-code -- utils/pty/src/pipe.rs
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate source was not restored' }
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Build the matching candidate
+        run: |
+          cargo build --locked -p codex-cli --bin codex --target x86_64-pc-windows-msvc 2>&1 | Tee-Object ../validation-artifacts/build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }
+          $candidate = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/debug/codex.exe'
+          Copy-Item -LiteralPath $candidate -Destination ../validation-artifacts/codex.exe -Force
+          $manifest = @{
+            source_commit = $env:STABLE_GIT_COMMIT
+            executable_sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+            build_lock_sha256 = (Get-FileHash -LiteralPath Cargo.lock -Algorithm SHA256).Hash
+            target = 'x86_64-pc-windows-msvc'
+            profile = 'dev'
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+          }
+          $manifest | ConvertTo-Json | Set-Content ../validation-artifacts/manifest.json
+          & $candidate --version | Set-Content ../validation-artifacts/version.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate did not start' }
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        if: always()
+        with:
+          name: lt-q7fe9-windows-validation
+          path: validation-artifacts/
+          retention-days: 7
+          if-no-files-found: error
