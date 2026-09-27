@@ -137,8 +137,11 @@ fn foreign_process_has_console(pid: u32) -> bool {
     if attached == 0 {
         return false;
     }
+    // CREATE_NO_WINDOW may retain a headless console and a nonzero code page.
+    // Attaching alone does not establish that a console window exists.
+    let has_window = !unsafe { GetConsoleWindow() }.is_null();
     unsafe { FreeConsole() };
-    true
+    has_window
 }
 
 fn process_is_active(pid: u32) -> bool {
@@ -470,7 +473,7 @@ fn assert_probe_report(
             report.case_name, report.nonce
         )));
     }
-    if report.hwnd != 0 || report.cp != 0 {
+    if report.hwnd != 0 {
         return Err(io_err(format!(
             "{case_name} console was present hwnd={:#x} cp={}",
             report.hwnd, report.cp
@@ -651,7 +654,6 @@ async fn run_command_probe(exe: &Path, temp: &Path, nonce: &str) -> io::Result<(
     }
     let report = parse_probe_report(&result.stdout)?;
     if report.hwnd != 0
-        || report.cp != 0
         || report.eof != 1
         || report.cwd_ok != 1
         || report.stdin_hex != hex_encode(input.as_bytes())
