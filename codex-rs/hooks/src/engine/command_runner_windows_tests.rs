@@ -28,6 +28,7 @@ use tokio::time::timeout;
 use winapi::shared::minwindef::DWORD;
 use winapi::um::consoleapi::GetConsoleCP;
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+use winapi::um::handleapi::SetHandleInformation;
 use winapi::um::jobapi::IsProcessInJob;
 use winapi::um::minwinbase::STILL_ACTIVE;
 use winapi::um::processthreadsapi::GetExitCodeProcess;
@@ -39,6 +40,7 @@ use winapi::um::tlhelp32::Process32NextW;
 use winapi::um::tlhelp32::TH32CS_SNAPPROCESS;
 use winapi::um::winbase::CREATE_NO_WINDOW;
 use winapi::um::winbase::DETACHED_PROCESS;
+use winapi::um::winbase::HANDLE_FLAG_INHERIT;
 use winapi::um::wincon::AttachConsole;
 use winapi::um::wincon::FreeConsole;
 use winapi::um::wincon::GetConsoleProcessList;
@@ -259,6 +261,18 @@ fn probe() -> ! {
 }
 
 fn spawn_sleeper() -> io::Result<std::process::Child> {
+    // Rust's Windows spawn inherits other inheritable handles even when its
+    // three standard streams use NUL. The detached fixture must not keep the
+    // hook's capture pipes open after the root exits normally.
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        if unsafe { SetHandleInformation(handle.cast(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
         .args(fixture_args())
