@@ -14,7 +14,7 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
-      STABLE_GIT_COMMIT: 7c916ec9f4572211383f5f083bb55a750df04882
+      STABLE_GIT_COMMIT: 6b25b827c0a58fd6adf4bfd55c2119ffecb03723
     defaults:
       run:
         shell: pwsh
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 7c916ec9f4572211383f5f083bb55a750df04882
+          ref: 6b25b827c0a58fd6adf4bfd55c2119ffecb03723
           fetch-depth: 0
           persist-credentials: false
       - name: Record source identity
