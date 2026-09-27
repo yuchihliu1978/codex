@@ -12,7 +12,6 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/lt-t0d4t-target
       CARGO_PROFILE_DEV_DEBUG: '0'
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
       STABLE_GIT_COMMIT: 654fd8907ae834d872c190fe86dc46a1116ae4bb
@@ -28,6 +27,7 @@ jobs:
           persist-credentials: false
       - name: Record source identity
         run: |
+          "CARGO_TARGET_DIR=$env:RUNNER_TEMP/lt-t0d4t-target" | Add-Content $env:GITHUB_ENV
           New-Item -ItemType Directory -Force ../validation-artifacts | Out-Null
           git rev-parse HEAD | Set-Content ../validation-artifacts/source.txt
           git diff 36650394c5b38c2990ccf2a3457165ca3e9d9726 HEAD --stat | Add-Content ../validation-artifacts/source.txt
