@@ -26,6 +26,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use winapi::shared::minwindef::DWORD;
+use winapi::um::consoleapi::GetConsoleCP;
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
 use winapi::um::jobapi::IsProcessInJob;
 use winapi::um::minwinbase::STILL_ACTIVE;
@@ -40,7 +41,6 @@ use winapi::um::winbase::CREATE_NO_WINDOW;
 use winapi::um::winbase::DETACHED_PROCESS;
 use winapi::um::wincon::AttachConsole;
 use winapi::um::wincon::FreeConsole;
-use winapi::um::wincon::GetConsoleCP;
 use winapi::um::wincon::GetConsoleProcessList;
 use winapi::um::wincon::GetConsoleWindow;
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
@@ -193,7 +193,9 @@ async fn wait_until_no_extra_children(root: u32, before: &[u32]) -> io::Result<(
         }
         sleep(Duration::from_millis(50)).await;
     }
-    Err(io_err(format!("extra child processes still active: {extras:?}")))
+    Err(io_err(format!(
+        "extra child processes still active: {extras:?}"
+    )))
 }
 
 async fn wait_until_inactive(pid: u32) -> io::Result<()> {
@@ -346,7 +348,7 @@ fn probe_env(
     temp: &Path,
     exit_code: i32,
     read_stdin: bool,
-) -> Vec<(&str, String)> {
+) -> Vec<(&'static str, String)> {
     let mut env = vec![
         (ROLE_ENV, "probe".to_string()),
         (CASE_ENV, case_name.to_string()),
@@ -396,15 +398,11 @@ fn parse_probe_report(text: &str) -> io::Result<ProbeReport> {
     Ok(ProbeReport {
         case_name: required("case")?,
         nonce: required("nonce")?,
-        hwnd: required("hwnd")?
-            .parse()
-            .map_err(|_| io_err("bad hwnd"))?,
+        hwnd: required("hwnd")?.parse().map_err(|_| io_err("bad hwnd"))?,
         cp: required("cp")?.parse().map_err(|_| io_err("bad cp"))?,
         stdin_hex: required("stdin")?,
         eof: required("eof")?.parse().map_err(|_| io_err("bad eof"))?,
-        cwd_ok: required("cwd")?
-            .parse()
-            .map_err(|_| io_err("bad cwd"))?,
+        cwd_ok: required("cwd")?.parse().map_err(|_| io_err("bad cwd"))?,
     })
 }
 
@@ -434,8 +432,14 @@ async fn read_to_end(mut pipe: impl AsyncRead + Unpin) -> io::Result<Vec<u8>> {
 }
 
 async fn finish_child(mut child: Child) -> io::Result<(std::process::ExitStatus, String, String)> {
-    let stdout = child.stdout.take().ok_or_else(|| io_err("missing stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| io_err("missing stderr"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io_err("missing stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io_err("missing stderr"))?;
     let joined = timeout(Duration::from_secs(15), async {
         tokio::try_join!(child.wait(), read_to_end(stdout), read_to_end(stderr))
     })
@@ -478,8 +482,12 @@ fn assert_probe_report(
             report.eof, report.cwd_ok, report.stdin_hex
         )));
     }
-    if !stderr.contains(&format!("{PROBE_ERR_PREFIX} case={case_name} nonce={nonce}")) {
-        return Err(io_err(format!("{case_name} stderr marker missing: {stderr:?}")));
+    if !stderr.contains(&format!(
+        "{PROBE_ERR_PREFIX} case={case_name} nonce={nonce}"
+    )) {
+        return Err(io_err(format!(
+            "{case_name} stderr marker missing: {stderr:?}"
+        )));
     }
     if status.code() != Some(exit_code) {
         return Err(io_err(format!(
@@ -530,13 +538,8 @@ async fn run_direct_launch_case(
             .raw_handle()
             .ok_or_else(|| io_err("missing root handle"))?;
         let mut in_job = 0;
-        let checked = unsafe {
-            IsProcessInJob(
-                process.cast(),
-                job.as_raw_handle().cast(),
-                &mut in_job,
-            )
-        };
+        let checked =
+            unsafe { IsProcessInJob(process.cast(), job.as_raw_handle().cast(), &mut in_job) };
         if checked == 0 || in_job == 0 {
             return Err(io_err(format!("{} root was not in its job", case.name)));
         }
@@ -653,9 +656,9 @@ async fn run_command_probe(exe: &Path, temp: &Path, nonce: &str) -> io::Result<(
         || report.cwd_ok != 1
         || report.stdin_hex != hex_encode(input.as_bytes())
         || report.case_name != "run-command"
-        || !result
-            .stderr
-            .contains(&format!("{PROBE_ERR_PREFIX} case=run-command nonce={nonce}"))
+        || !result.stderr.contains(&format!(
+            "{PROBE_ERR_PREFIX} case=run-command nonce={nonce}"
+        ))
     {
         return Err(io_err(format!(
             "run_command probe transport stdout={} stderr={}",
@@ -698,7 +701,10 @@ async fn wait_for_pid_file(path: &Path) -> io::Result<(u32, u32)> {
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(io_err(format!("pid file {} was not written", path.display())));
+            return Err(io_err(format!(
+                "pid file {} was not written",
+                path.display()
+            )));
         }
         sleep(Duration::from_millis(20)).await;
     }
@@ -707,7 +713,10 @@ async fn wait_for_pid_file(path: &Path) -> io::Result<(u32, u32)> {
 fn tree_env(temp: &Path, role: &str, pid_file: &Path, exit_code: i32) -> HashMap<String, String> {
     HashMap::from([
         (ROLE_ENV.to_string(), role.to_string()),
-        (PID_FILE_ENV.to_string(), pid_file.to_string_lossy().into_owned()),
+        (
+            PID_FILE_ENV.to_string(),
+            pid_file.to_string_lossy().into_owned(),
+        ),
         (TEMP_ENV.to_string(), temp.to_string_lossy().into_owned()),
         (EXIT_ENV.to_string(), exit_code.to_string()),
     ])
@@ -764,9 +773,9 @@ async fn run_preserve_descendant(exe: &Path, temp: &Path, nonce: &str) -> io::Re
         )));
     }
     let (_root, child) = parse_pids(&result.stdout).or_else(|_| {
-        fs::read_to_string(&pid_file).map_err(|err| io_err(err.to_string())).and_then(|text| {
-            parse_pids(&format!("{PIDS_PREFIX} {text}"))
-        })
+        fs::read_to_string(&pid_file)
+            .map_err(|err| io_err(err.to_string()))
+            .and_then(|text| parse_pids(&format!("{PIDS_PREFIX} {text}")))
     })?;
     let _kill = KillPid(Some(child));
     if !process_is_active(child) {
@@ -896,8 +905,14 @@ async fn detached_parent_command_hooks_hide_console_windows() -> io::Result<()> 
         .env(NONCE_ENV, &nonce)
         .env(TEMP_ENV, temp.path());
     let mut child = command.spawn()?;
-    let stdout = child.stdout.take().ok_or_else(|| io_err("missing worker stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| io_err("missing worker stderr"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io_err("missing worker stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io_err("missing worker stderr"))?;
     let joined = timeout(Duration::from_secs(90), async {
         tokio::try_join!(child.wait(), read_to_end(stdout), read_to_end(stderr))
     })
