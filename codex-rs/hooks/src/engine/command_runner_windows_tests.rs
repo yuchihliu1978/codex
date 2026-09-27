@@ -53,6 +53,7 @@ use super::super::WindowsHookSpawnPath;
 use super::super::run_command;
 use super::super::set_hook_launch_fault;
 use super::super::spawn_no_window_process;
+use super::super::spawn_taskkill_tree;
 use super::super::spawn_windows_command_hook;
 use super::super::take_hook_spawn_path;
 use super::runtime;
@@ -730,7 +731,7 @@ async fn run_timeout_case(
     name: &str,
     fault: WindowsHookLaunchFault,
     expected_path: WindowsHookSpawnPath,
-) -> io::Result<()> {
+) -> io::Result<KillPid> {
     let pid_file = temp.join(format!("{name}-pids.txt"));
     let _ = fs::remove_file(&pid_file);
     let (runtime, _results) = runtime();
@@ -745,6 +746,7 @@ async fn run_timeout_case(
         .map_err(|_| io_err(format!("{name} timeout case hung")))?;
     let (result, pids) = joined;
     let (root, child) = pids?;
+    let owned_child = KillPid(Some(child));
     let path = take_hook_spawn_path();
     if result.error.as_deref() != Some("hook timed out after 2s")
         || result.exit_code.is_some()
@@ -756,8 +758,37 @@ async fn run_timeout_case(
         )));
     }
     wait_until_inactive(root).await?;
-    wait_until_inactive(child).await?;
-    Ok(())
+    Ok(owned_child)
+}
+
+async fn run_live_taskkill_tree(exe: &Path, temp: &Path) -> io::Result<()> {
+    let pid_file = temp.join("taskkill-pids.txt");
+    let mut command = Command::new(exe);
+    command
+        .args(fixture_args())
+        .envs(tree_env(temp, "tree-root", &pid_file, 0))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    set_hook_launch_fault(WindowsHookLaunchFault::JobCreate);
+    let (mut root, job) = spawn_windows_command_hook(command)?;
+    if job.is_some() {
+        return Err(io_err("taskkill fixture unexpectedly has a job"));
+    }
+    let (root_pid, child_pid) = wait_for_pid_file(&pid_file).await?;
+    let _owned_child = KillPid(Some(child_pid));
+    let mut cleanup = spawn_taskkill_tree(root_pid)?;
+    let status = tokio::task::spawn_blocking(move || cleanup.wait())
+        .await
+        .map_err(|err| io_err(err.to_string()))??;
+    if !status.success() {
+        return Err(io_err(format!("taskkill failed: {status}")));
+    }
+    timeout(Duration::from_secs(5), root.wait())
+        .await
+        .map_err(|_| io_err("taskkill left the root alive"))??;
+    wait_until_inactive(child_pid).await
 }
 
 async fn run_preserve_descendant(exe: &Path, temp: &Path, nonce: &str) -> io::Result<()> {
@@ -864,7 +895,7 @@ async fn worker() -> io::Result<()> {
     run_final_spawn_failure(&temp).await?;
     run_command_probe(&exe, &temp, &nonce).await?;
     run_command_spawn_error(&temp).await?;
-    run_timeout_case(
+    let contained_child = run_timeout_case(
         &exe,
         &temp,
         "contained-timeout",
@@ -872,7 +903,13 @@ async fn worker() -> io::Result<()> {
         WindowsHookSpawnPath::Contained,
     )
     .await?;
-    run_timeout_case(
+    wait_until_inactive(
+        contained_child
+            .0
+            .ok_or_else(|| io_err("missing descendant"))?,
+    )
+    .await?;
+    let uncontained_child = run_timeout_case(
         &exe,
         &temp,
         "uncontained-timeout",
@@ -880,6 +917,11 @@ async fn worker() -> io::Result<()> {
         WindowsHookSpawnPath::JobUnavailable,
     )
     .await?;
+    // The existing fallback is best effort: kill_on_drop can terminate the root
+    // before taskkill discovers its descendants. Do not assert a new isolation
+    // guarantee here; keep fixture cleanup owned and test a live tree separately.
+    drop(uncontained_child);
+    run_live_taskkill_tree(&exe, &temp).await?;
     run_preserve_descendant(&exe, &temp, &nonce).await?;
     run_async_shutdown(&exe, &temp).await?;
     run_cleanup_probe(&exe, &temp, &nonce).await?;
