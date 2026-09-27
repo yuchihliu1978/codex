@@ -6,6 +6,10 @@ permissions:
   contents: read
 jobs:
   validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [754f7ad7b86a7cb256d5eb03973be7d79d705398, 6b25b827c0a58fd6adf4bfd55c2119ffecb03723]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -14,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 754f7ad7b86a7cb256d5eb03973be7d79d705398
+          ref: ${{ matrix.source }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
@@ -29,19 +33,28 @@ jobs:
         run: |
           mkdir -p validation-artifacts
           git rev-parse HEAD > validation-artifacts/source.txt
-      - name: Run existing core hook integration cases
+      - name: Align release local versions and build required helpers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          p = Path('codex-rs/Cargo.lock')
+          blocks = p.read_text().split('[[package]]')
+          for i, block in enumerate(blocks[1:], 1):
+              package = tomllib.loads('[[package]]' + block)['package'][0]
+              if 'source' not in package and package['version'] == '0.0.0':
+                  blocks[i] = block.replace('version = "0.0.0"', 'version = "0.157.1"', 1)
+          p.write_text('[[package]]'.join(blocks))
+          PY
+          cd codex-rs
+          cargo build --locked -p codex-code-mode-host -p codex-linux-sandbox
+      - name: Diagnose seven failing cases with required helpers
         run: |
           set -euo pipefail
-          just test -p codex-core --test all --locked -E 'test(suite::hooks::)' 2>&1 | tee validation-artifacts/core-hooks.txt
-      - name: Scoped lint fixes
-        if: always()
-        run: |
-          set -euo pipefail
-          just fix -p codex-hooks -p codex-utils-pty --locked 2>&1 | tee validation-artifacts/clippy.txt
-          git diff > validation-artifacts/clippy.patch
+          just test -p codex-core --test all --locked --test-threads 1 -E 'test(suite::hooks::) & (test(code_mode) | test(network_approval) | test(async_hook_finishing_while_idle_waits_for_the_next_turn::user_turn))' 2>&1 | tee validation-artifacts/core-hooks.txt
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         if: always()
         with:
-          name: lt-q7fe9-unix-validation
+          name: lt-q7fe9-core-${{ matrix.source }}
           path: validation-artifacts/
           retention-days: 7
