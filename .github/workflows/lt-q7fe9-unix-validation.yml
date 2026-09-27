@@ -14,14 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: a566b5581a82e4abda556c6e8d350cdd950b4647
+          ref: 8cf181747a6d889e695d9b172ca4cb105e7363de
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: '1.95.0'
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
         with:
-          tool: just@1.51.0,cargo-nextest,bazelisk
+          tool: just@1.51.0,cargo-nextest
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-version: 1.28.1
       - name: Regenerate dependency metadata
         run: |
           mkdir -p validation-artifacts
