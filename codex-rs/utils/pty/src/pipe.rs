@@ -28,6 +28,9 @@ use crate::process::exit_code_from_status;
 use libc;
 
 #[cfg(windows)]
+use winapi::um::winbase::CREATE_NO_WINDOW;
+
+#[cfg(windows)]
 enum WindowsChildTerminator {
     Job(Arc<crate::win::JobObject>),
     Process(u32),
@@ -184,6 +187,11 @@ async fn spawn_process_with_stdin_mode(
 
     #[cfg(windows)]
     let job = crate::win::JobObject::create().map(Arc::new);
+    #[cfg(windows)]
+    {
+        // Detached daemon callers need this for non-interactive pipe children.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = command.spawn()?;
     #[cfg(windows)]
     let windows_terminator = {
